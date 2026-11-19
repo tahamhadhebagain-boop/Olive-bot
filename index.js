@@ -472,7 +472,7 @@ __def('src/handler', function (module, exports, require) {
 const registry = require('./registry');
 const store = require('./store');
 const state = require('./state');
-const { send, call, isAdmin, isDev, errMsg } = require('./utils');
+const { send, call, isAdmin, isDev, errMsg, sleep } = require('./utils');
 
 const seen = new Set();
 function isDuplicate(id) {
@@ -492,7 +492,10 @@ async function onMessage(api, event) {
   if (senderID === state.botID) return;
 
   const first = body.split(/\s+/)[0];
-  const cmd = registry.find(first);
+  // دعم الأوامر بالبادئات المطلوبة مع الإبقاء على الأوامر دون بادئة.
+  const commandName = first.replace(/^[.•—]+/, '');
+  if (!commandName) return;
+  const cmd = registry.find(commandName);
   if (!cmd) return;
 
   const dev = isDev(senderID);
@@ -516,6 +519,26 @@ async function onMessage(api, event) {
   }
 
   try {
+    // إظهار مؤشر الكتابة لمدة 3 ثوانٍ قبل تنفيذ الأمر وإرسال رده.
+    let stopTyping = null;
+    try {
+      if (typeof api.sendTypingIndicator === 'function') {
+        const result = api.sendTypingIndicator(threadID);
+        if (typeof result === 'function') stopTyping = result;
+      }
+    } catch (typingError) {
+      console.warn('[typing] تعذر إظهار مؤشر الكتابة:', errMsg(typingError));
+    }
+
+    await sleep(3000);
+
+    if (stopTyping) {
+      try { stopTyping(); }
+      catch (typingError) {
+        console.warn('[typing] تعذر إنهاء مؤشر الكتابة:', errMsg(typingError));
+      }
+    }
+
     await cmd.run(ctx);
   } catch (e) {
     console.error(`[cmd:${cmd.names[0]}]`, e);
@@ -1360,7 +1383,22 @@ function main() {
   }
   state.cookies = appState;
 
-  const login = require('fca-unofficial');
+  // اسم الحزمة الرسمي في مشروعك هو @vangbanlanhat/fca-unofficial.
+  // نُبقي الاسم القديم كخيار احتياطي للتوافق مع التثبيتات السابقة.
+  let login;
+  try {
+    login = require('@vangbanlanhat/fca-unofficial');
+  } catch (primaryError) {
+    try {
+      login = require('fca-unofficial');
+    } catch (fallbackError) {
+      throw new Error(
+        'لم يتم العثور على مكتبة FCA. ثبّت @vangbanlanhat/fca-unofficial في package.json. ' +
+        fallbackError.message
+      );
+    }
+  }
+
   login(
     { appState },
     {
