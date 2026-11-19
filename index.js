@@ -80,10 +80,10 @@ module.exports = {
   api: null,
   botID: null,
   adminID: null,
-  cookies: [], // appState، يُستخدم لجلب صفحات الحسابات
-  spam: new Map(), // threadID -> job
-  tasks: new Map(), // threadID -> Set<{cancelled}>
-  sent: new Map(), // threadID -> [messageID...] آخر رسائل البوت
+  cookies: [],
+  spam: new Map(),
+  tasks: new Map(),
+  sent: new Map(),
 };
 });
 
@@ -95,8 +95,6 @@ const path = require('path');
 const { DATA_DIR } = require('./config');
 
 const FILE = path.join(DATA_DIR, 'store.json');
-
-// locked = true  → الأوامر للمطورين فقط (الافتراضي)
 const data = { locked: true, devs: [], threads: {}, spam: {} };
 
 function load() {
@@ -190,7 +188,6 @@ function forgetSent(threadID, messageID) {
   if (arr) state.sent.set(threadID, arr.filter((m) => m !== messageID));
 }
 
-// يرجع معلومات الرسالة، أو null عند الفشل (لا يرمي أخطاء)
 function send(api, threadID, message, { track = true, replyTo } = {}) {
   return new Promise((resolve) => {
     let done = false;
@@ -234,7 +231,6 @@ async function download(url, file, { headers = {}, timeout = 30000 } = {}) {
   return { size: buf.length, type: res.headers.get('content-type') || '' };
 }
 
-/* ───────── استخراج ايدي الحساب ───────── */
 const cookieHeader = () =>
   (state.cookies || [])
     .map((c) => `${c.key || c.name}=${c.value}`)
@@ -243,7 +239,7 @@ const cookieHeader = () =>
 function extractUidSync(text) {
   const t = String(text || '').trim();
   if (/^\d{5,}$/.test(t)) return t;
-  let m = t.match(/[?&]id=(\d{5,})/); // profile.php?id=
+  let m = t.match(/[?&]id=(\d{5,})/);
   if (m) return m[1];
   m = t.match(/(?:facebook|fb)\.com\/people\/[^/]+\/(\d{5,})/);
   if (m) return m[1];
@@ -252,7 +248,6 @@ function extractUidSync(text) {
   return null;
 }
 
-// يقبل: ايدي رقمي، profile.php?id=، /people/..، أو رابط باسم مستخدم (يُجلب من صفحة الحساب)
 async function resolveUid(input) {
   const direct = extractUidSync(input);
   if (direct) return direct;
@@ -289,7 +284,6 @@ async function resolveUid(input) {
   return null;
 }
 
-// الهدف: تاغ > ايدي/رابط في النص > الرد على رسالة
 async function resolveTargets(ctx, { reply = true } = {}) {
   const { event } = ctx;
   let rest = ctx.args || '';
@@ -321,22 +315,18 @@ async function resolveTargets(ctx, { reply = true } = {}) {
   return { ids: [...new Set(ids)], rest: rest.replace(/\s+/g, ' ').trim(), failed };
 }
 
-/* ───────── طوابير ومهام ───────── */
 const queues = new Map();
 function enqueue(key, fn) {
   const prev = queues.get(key) || Promise.resolve();
   const next = prev.catch(() => {}).then(fn);
   queues.set(key, next);
-  next
-    .finally(() => {
-      if (queues.get(key) === next) queues.delete(key);
-    })
-    .catch(() => {});
+  next.finally(() => {
+    if (queues.get(key) === next) queues.delete(key);
+  }).catch(() => {});
   return next;
 }
 
 const hits = new Map();
-// يمنع حلقات الصراع مع بوت/مشرف آخر يعيد التغيير باستمرار
 function rateOk(key, max = 15, windowMs = 60000) {
   const now = Date.now();
   const arr = (hits.get(key) || []).filter((t) => now - t < windowMs);
@@ -410,7 +400,6 @@ function start(api, threadID, message, seconds, { persist = true } = {}) {
     store.save();
   }
 
-  // إرسال تلقائي: لا يرد على أحد، وكل مرة بعد مرور المدة
   const tick = async () => {
     if (job.stopped) return;
     const res = await send(api, threadID, message, { track: false });
@@ -435,7 +424,6 @@ function stopAll() {
   return n;
 }
 
-// يستأنف السبام المحفوظ بعد إعادة تشغيل الاستضافة
 function resumeAll(api) {
   let i = 0;
   for (const [tid, j] of Object.entries(store.data.spam)) {
@@ -451,9 +439,6 @@ module.exports = { start, stop, stopAll, resumeAll };
 // ══════════════ src/registry ══════════════
 __def('src/registry', function (module, exports, require) {
 'use strict';
-const fs = require('fs');
-const path = require('path');
-
 const map = new Map();
 const list = [];
 const norm = (s) => String(s).trim().toLowerCase();
@@ -478,7 +463,6 @@ function load() {
 }
 
 const find = (word) => map.get(norm(word));
-
 module.exports = { load, find, list };
 });
 
@@ -507,7 +491,6 @@ async function onMessage(api, event) {
   const senderID = String(event.senderID);
   if (senderID === state.botID) return;
 
-  // بدون بادئة: الكلمة الأولى هي اسم الأمر
   const first = body.split(/\s+/)[0];
   const cmd = registry.find(first);
   if (!cmd) return;
@@ -516,20 +499,14 @@ async function onMessage(api, event) {
   const admin = isAdmin(senderID);
   if (cmd.adminOnly && !admin) return;
   if (cmd.devOnly && !dev) return;
-  if (!dev && store.data.locked) return; // الأوامر مقفولة → للمطورين فقط
+  if (!dev && store.data.locked) return;
 
   const args = body.slice(first.length).trim();
-  if (cmd.noArgs && args) return; // أوامر بلا وسائط لا تُفعَّل وسط كلام عادي
+  if (cmd.noArgs && args) return;
 
   const threadID = String(event.threadID);
   const ctx = {
-    api,
-    event,
-    args,
-    threadID,
-    senderID,
-    isDev: dev,
-    isAdmin: admin,
+    api, event, args, threadID, senderID, isDev: dev, isAdmin: admin,
     send: (msg, opts) => send(api, threadID, msg, opts),
     call: (method, ...a) => call(api, method, ...a),
   };
@@ -552,7 +529,6 @@ module.exports = { onMessage };
 // ══════════════ src/protect ══════════════
 __def('src/protect', function (module, exports, require) {
 'use strict';
-// حماية اسم المجموعة والكنيات: أي تغيير أو حذف يعيده البوت
 const store = require('./store');
 const state = require('./state');
 const { call, sleep, enqueue, rateOk, errMsg } = require('./utils');
@@ -562,7 +538,7 @@ async function onLogEvent(api, event) {
   const author = String(event.author);
   const t = store.data.threads[threadID];
   if (!t) return;
-  if (author === state.botID) return; // تغييرات البوت نفسه لا تُعاد (تجنّب الحلقات)
+  if (author === state.botID) return;
   const data = event.logMessageData || {};
 
   switch (event.logMessageType) {
@@ -571,16 +547,12 @@ async function onLogEvent(api, event) {
       if ((data.name || '') === t.name) return;
       if (!rateOk(`name:${threadID}`)) return console.warn(`[protect] صراع على الاسم في ${threadID} — تم الإيقاف مؤقتاً`);
       enqueue(`prot:${threadID}`, async () => {
-        try {
-          await call(api, 'setTitle', t.name, threadID);
-        } catch (e) {
-          console.error('[protect:name]', errMsg(e));
-        }
+        try { await call(api, 'setTitle', t.name, threadID); }
+        catch (e) { console.error('[protect:name]', errMsg(e)); }
         await sleep(1200);
       });
       break;
     }
-
     case 'log:user-nickname': {
       if (!t.nick) return;
       const uid = String(data.participant_id);
@@ -588,27 +560,19 @@ async function onLogEvent(api, event) {
       if ((data.nickname || '') === expected) return;
       if (!rateOk(`nick:${threadID}:${uid}`)) return console.warn(`[protect] صراع على كنية ${uid} — تم الإيقاف مؤقتاً`);
       enqueue(`prot:${threadID}`, async () => {
-        try {
-          await call(api, 'changeNickname', expected, threadID, uid);
-        } catch (e) {
-          console.error('[protect:nick]', errMsg(e));
-        }
+        try { await call(api, 'changeNickname', expected, threadID, uid); }
+        catch (e) { console.error('[protect:nick]', errMsg(e)); }
         await sleep(1200);
       });
       break;
     }
-
     case 'log:subscribe': {
-      // عضو جديد → يأخذ الكنية المحمية مباشرة
       if (!t.nick) return;
       for (const p of data.addedParticipants || []) {
         const uid = String(p.userFbId);
         enqueue(`prot:${threadID}`, async () => {
-          try {
-            await call(api, 'changeNickname', t.nick.all, threadID, uid);
-          } catch (e) {
-            console.error('[protect:join]', errMsg(e));
-          }
+          try { await call(api, 'changeNickname', t.nick.all, threadID, uid); }
+          catch (e) { console.error('[protect:join]', errMsg(e)); }
           await sleep(1200);
         });
       }
@@ -624,25 +588,14 @@ module.exports = { onLogEvent };
 __def('commands/add', function (module, exports, require) {
 'use strict';
 const { resolveTargets, errMsg, sleep } = require('../src/utils');
-
 module.exports = {
-  names: ['add'],
-  category: 'members',
-  hint: '+ رابط حساب',
-  desc: 'إضافة عضو للمجموعة',
-  groupOnly: true,
+  names: ['add'], category: 'members', hint: '+ رابط حساب', desc: 'إضافة عضو للمجموعة', groupOnly: true,
   async run(ctx) {
     const { ids, failed } = await resolveTargets(ctx, { reply: false });
-    if (!ids.length) {
-      return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: add رابط الحساب'));
-    }
+    if (!ids.length) return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: add رابط الحساب'));
     for (const id of ids) {
-      try {
-        await ctx.call('addUserToGroup', id, ctx.threadID);
-        await ctx.send(`✅ تمت إضافة ${id}`);
-      } catch (e) {
-        await ctx.send(`❌ تعذرت إضافة ${id}: ${errMsg(e)}`);
-      }
+      try { await ctx.call('addUserToGroup', id, ctx.threadID); await ctx.send(`✅ تمت إضافة ${id}`); }
+      catch (e) { await ctx.send(`❌ تعذرت إضافة ${id}: ${errMsg(e)}`); }
       await sleep(700);
     }
   },
@@ -654,40 +607,22 @@ __def('commands/del', function (module, exports, require) {
 'use strict';
 const state = require('../src/state');
 const { lastSent, forgetSent, sleep, errMsg } = require('../src/utils');
-
 module.exports = {
-  names: ['del', 'clear'],
-  category: 'tools',
-  hint: '(رد على رسالة البوت)',
-  desc: 'حذف رسالة للبوت بالرد عليها (أو آخر N رسائل: del 5)',
+  names: ['del', 'clear'], category: 'tools', hint: '(رد على رسالة البوت)', desc: 'حذف رسالة للبوت بالرد عليها (أو آخر N رسائل: del 5)',
   async run({ event, args, threadID, send, call }) {
     const reply = event.messageReply;
-
     if (reply) {
-      if (String(reply.senderID) !== state.botID) {
-        return void (await send('ℹ️ أستطيع حذف رسائلي أنا فقط.'));
-      }
-      try {
-        await call('unsendMessage', reply.messageID);
-        forgetSent(threadID, reply.messageID);
-      } catch (e) {
-        await send(`❌ تعذر الحذف: ${errMsg(e)}`);
-      }
+      if (String(reply.senderID) !== state.botID) return void (await send('ℹ️ أستطيع حذف رسائلي أنا فقط.'));
+      try { await call('unsendMessage', reply.messageID); forgetSent(threadID, reply.messageID); }
+      catch (e) { await send(`❌ تعذر الحذف: ${errMsg(e)}`); }
       return;
     }
-
-    // بدون رد: حذف آخر رسائل للبوت في هذه المحادثة
     const n = args ? parseInt(args, 10) : 1;
-    if (!Number.isInteger(n) || n < 1) {
-      return void (await send('✏️ الاستخدام: رد على رسالة البوت ثم اكتب del\nأو: del 5 لحذف آخر 5 رسائل'));
-    }
+    if (!Number.isInteger(n) || n < 1) return void (await send('✏️ الاستخدام: رد على رسالة البوت ثم اكتب del\nأو: del 5 لحذف آخر 5 رسائل'));
     const ids = lastSent(threadID, Math.min(n, 20));
     if (!ids.length) return void (await send('ℹ️ لا توجد رسائل حديثة للبوت. رد على رسالة البوت لحذفها.'));
     for (const id of ids) {
-      try {
-        await call('unsendMessage', id);
-        forgetSent(threadID, id);
-      } catch (_) {}
+      try { await call('unsendMessage', id); forgetSent(threadID, id); } catch (_) {}
       await sleep(500);
     }
   },
@@ -699,25 +634,13 @@ __def('commands/dev', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
 const { resolveTargets } = require('../src/utils');
-
 module.exports = {
-  names: ['dev'],
-  category: 'admin',
-  hint: '(رد / تاغ / رابط / ايدي)',
-  desc: 'إعطاء صلاحية مطور للبوت',
-  adminOnly: true,
+  names: ['dev'], category: 'admin', hint: '(رد / تاغ / رابط / ايدي)', desc: 'إعطاء صلاحية مطور للبوت', adminOnly: true,
   async run(ctx) {
     const { ids, failed } = await resolveTargets(ctx);
-    if (!ids.length) {
-      return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: رد على رسالة العضو أو تاغ ثم اكتب dev'));
-    }
+    if (!ids.length) return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: رد على رسالة العضو أو تاغ ثم اكتب dev'));
     const added = [];
-    for (const id of ids) {
-      if (!store.data.devs.includes(id)) {
-        store.data.devs.push(id);
-        added.push(id);
-      }
-    }
+    for (const id of ids) if (!store.data.devs.includes(id)) { store.data.devs.push(id); added.push(id); }
     store.save();
     await ctx.send(added.length ? `✅ أصبح مطوراً: ${added.join(' , ')}` : 'ℹ️ هو مطور بالفعل.');
   },
@@ -730,13 +653,8 @@ __def('commands/group', function (module, exports, require) {
 const fs = require('fs');
 const store = require('../src/store');
 const { tmpFile, download, rmSafe } = require('../src/utils');
-
 module.exports = {
-  names: ['group', 'gc', 'gp'],
-  category: 'group',
-  desc: 'عرض معلومات المجموعة',
-  noArgs: true,
-  groupOnly: true,
+  names: ['group', 'gc', 'gp'], category: 'group', desc: 'عرض معلومات المجموعة', noArgs: true, groupOnly: true,
   async run({ send, call, threadID }) {
     const info = await call('getThreadInfo', threadID);
     const t = store.data.threads[threadID] || {};
@@ -751,17 +669,11 @@ module.exports = {
       `🛡 حماية الاسم: ${t.name ? 'مفعّلة' : 'معطّلة'}`,
       `🛡 حماية الكنيات: ${t.nick ? 'مفعّلة' : 'معطّلة'}`,
     ].join('\n');
-
     let file = null;
     let attachment;
     if (info.imageSrc) {
-      try {
-        file = tmpFile('jpg');
-        await download(info.imageSrc, file);
-        attachment = fs.createReadStream(file);
-      } catch (_) {
-        attachment = undefined;
-      }
+      try { file = tmpFile('jpg'); await download(info.imageSrc, file); attachment = fs.createReadStream(file); }
+      catch (_) { attachment = undefined; }
     }
     await send(attachment ? { body, attachment } : body);
     if (file) await rmSafe(file);
@@ -776,30 +688,22 @@ const os = require('os');
 const store = require('../src/store');
 const state = require('../src/state');
 const { fmtDuration } = require('../src/utils');
-
 module.exports = {
-  names: ['health'],
-  hidden: ['helath'], // الكتابة الخاطئة الشائعة
-  category: 'general',
-  order: 2,
-  desc: 'عرض حالة البوت',
-  noArgs: true,
+  names: ['health'], hidden: ['helath'], category: 'general', order: 2, desc: 'عرض حالة البوت', noArgs: true,
   async run({ send }) {
     const mem = process.memoryUsage();
     const protectedGroups = Object.values(store.data.threads).filter((t) => t.name || t.nick).length;
-    await send(
-      [
-        '🟢 البوت يعمل',
-        `⏱ مدة التشغيل: ${fmtDuration(Date.now() - state.startedAt)}`,
-        `📡 آخر حدث: قبل ${fmtDuration(Date.now() - state.lastEventAt)}`,
-        `🧠 الذاكرة: ${(mem.rss / 1048576).toFixed(0)} MB`,
-        `🖥 Node ${process.version} • ${os.platform()} • حمل ${os.loadavg()[0].toFixed(2)}`,
-        `🔒 الأوامر: ${store.data.locked ? 'للمطورين فقط' : 'مفتوحة للجميع'}`,
-        `👑 المطورون: ${store.data.devs.length + (state.adminID ? 1 : 0)}`,
-        `🛡 مجموعات محمية: ${protectedGroups}`,
-        `🔁 سبام نشط: ${state.spam.size}`,
-      ].join('\n')
-    );
+    await send([
+      '🟢 البوت يعمل',
+      `⏱ مدة التشغيل: ${fmtDuration(Date.now() - state.startedAt)}`,
+      `📡 آخر حدث: قبل ${fmtDuration(Date.now() - state.lastEventAt)}`,
+      `🧠 الذاكرة: ${(mem.rss / 1048576).toFixed(0)} MB`,
+      `🖥 Node ${process.version} • ${os.platform()} • حمل ${os.loadavg()[0].toFixed(2)}`,
+      `🔒 الأوامر: ${store.data.locked ? 'للمطورين فقط' : 'مفتوحة للجميع'}`,
+      `👑 المطورون: ${store.data.devs.length + (state.adminID ? 1 : 0)}`,
+      `🛡 مجموعات محمية: ${protectedGroups}`,
+      `🔁 سبام نشط: ${state.spam.size}`,
+    ].join('\n'));
   },
 };
 });
@@ -809,32 +713,16 @@ __def('commands/kick', function (module, exports, require) {
 'use strict';
 const state = require('../src/state');
 const { resolveTargets, isAdmin, errMsg, sleep } = require('../src/utils');
-
 module.exports = {
-  names: ['kick', 'طرد'],
-  category: 'members',
-  hint: '(رد / تاغ / ايدي)',
-  desc: 'طرد عضو من المجموعة',
-  groupOnly: true,
+  names: ['kick', 'طرد'], category: 'members', hint: '(رد / تاغ / ايدي)', desc: 'طرد عضو من المجموعة', groupOnly: true,
   async run(ctx) {
     const { ids, failed } = await resolveTargets(ctx);
-    if (!ids.length) {
-      return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: رد على رسالة العضو أو تاغ ثم اكتب kick'));
-    }
+    if (!ids.length) return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: رد على رسالة العضو أو تاغ ثم اكتب kick'));
     for (const id of ids) {
-      if (id === state.botID) {
-        await ctx.send('😅 لن أطرد نفسي.');
-        continue;
-      }
-      if (isAdmin(id)) {
-        await ctx.send('🚫 لا يمكن طرد المطور الأساسي.');
-        continue;
-      }
-      try {
-        await ctx.call('removeUserFromGroup', id, ctx.threadID);
-      } catch (e) {
-        await ctx.send(`❌ تعذر طرد ${id}: ${errMsg(e)}`);
-      }
+      if (id === state.botID) { await ctx.send('😅 لن أطرد نفسي.'); continue; }
+      if (isAdmin(id)) { await ctx.send('🚫 لا يمكن طرد المطور الأساسي.'); continue; }
+      try { await ctx.call('removeUserFromGroup', id, ctx.threadID); }
+      catch (e) { await ctx.send(`❌ تعذر طرد ${id}: ${errMsg(e)}`); }
       await sleep(700);
     }
   },
@@ -845,18 +733,9 @@ module.exports = {
 __def('commands/lock', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
-
 module.exports = {
-  names: ['lock'],
-  category: 'admin',
-  desc: 'قفل الأوامر: تعمل للمطورين فقط',
-  noArgs: true,
-  devOnly: true,
-  async run({ send }) {
-    store.data.locked = true;
-    store.save();
-    await send('🔒 تم قفل الأوامر — للمطورين فقط.');
-  },
+  names: ['lock'], category: 'admin', desc: 'قفل الأوامر: تعمل للمطورين فقط', noArgs: true, devOnly: true,
+  async run({ send }) { store.data.locked = true; store.save(); await send('🔒 تم قفل الأوامر — للمطورين فقط.'); },
 };
 });
 
@@ -864,31 +743,19 @@ module.exports = {
 __def('commands/menu', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
-
 const CATS = [
-  ['general', '📌 عام'],
-  ['group', '🏠 المجموعة'],
-  ['members', '👥 الأعضاء'],
-  ['tools', '🧰 أدوات'],
-  ['admin', '👑 المطورين'],
+  ['general', '📌 عام'], ['group', '🏠 المجموعة'], ['members', '👥 الأعضاء'], ['tools', '🧰 أدوات'], ['admin', '👑 المطورين'],
 ];
-
 module.exports = {
-  names: ['up', 'menu', 'bot', 'olive', 'taha'],
-  category: 'general',
-  order: 0,
-  desc: 'عرض هذه القائمة',
-  noArgs: true,
+  names: ['up', 'menu', 'bot', 'olive', 'taha'], category: 'general', order: 0, desc: 'عرض هذه القائمة', noArgs: true,
   async run({ send }) {
-    const { list } = require('../src/registry'); // تحميل متأخر لتجنب الاعتماد الدائري
+    const { list } = require('../src/registry');
     const out = ['🫒 ━━━ OLIVE BOT ━━━ 🫒', store.data.locked ? '🔒 الأوامر: للمطورين فقط' : '🔓 الأوامر: مفتوحة للجميع'];
     for (const [key, title] of CATS) {
       const cmds = list.filter((c) => c.category === key).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
       if (!cmds.length) continue;
       out.push('', title);
-      for (const c of cmds) {
-        out.push(`• ${c.names.join(' / ')}${c.hint ? ' ' + c.hint : ''}`, `   ↳ ${c.desc}`);
-      }
+      for (const c of cmds) out.push(`• ${c.names.join(' / ')}${c.hint ? ' ' + c.hint : ''}`, `   ↳ ${c.desc}`);
     }
     await send(out.join('\n'));
   },
@@ -900,28 +767,14 @@ __def('commands/name', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
 const { errMsg } = require('../src/utils');
-
 module.exports = {
-  names: ['nam', 'name', 'نيم'],
-  category: 'group',
-  hint: '+ اسم  (أو off لإيقاف الحماية)',
-  desc: 'تغيير اسم المجموعة وحمايته من التغيير والحذف',
-  groupOnly: true,
+  names: ['nam', 'name', 'نيم'], category: 'group', hint: '+ اسم  (أو off لإيقاف الحماية)', desc: 'تغيير اسم المجموعة وحمايته من التغيير والحذف', groupOnly: true,
   async run({ send, call, args, threadID }) {
     if (!args) return void (await send('✏️ الاستخدام:\nnam اسم المجموعة\nnam off ← إيقاف الحماية'));
-
     const t = store.thread(threadID);
-    if (/^(off|stop|الغاء|إلغاء)$/i.test(args)) {
-      delete t.name;
-      store.save();
-      return void (await send('🔓 تم إيقاف حماية اسم المجموعة.'));
-    }
-
-    try {
-      await call('setTitle', args, threadID);
-    } catch (e) {
-      return void (await send(`❌ تعذر تغيير الاسم: ${errMsg(e)}`));
-    }
+    if (/^(off|stop|الغاء|إلغاء)$/i.test(args)) { delete t.name; store.save(); return void (await send('🔓 تم إيقاف حماية اسم المجموعة.')); }
+    try { await call('setTitle', args, threadID); }
+    catch (e) { return void (await send(`❌ تعذر تغيير الاسم: ${errMsg(e)}`)); }
     t.name = args;
     store.save();
     await send(`✅ تم تغيير الاسم وحمايته:\n${args}`);
@@ -934,31 +787,17 @@ __def('commands/nick', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
 const { resolveTargets, errMsg, sleep } = require('../src/utils');
-
 module.exports = {
-  names: ['nick'],
-  category: 'members',
-  hint: '(رد/تاغ) + الكنية',
-  desc: 'تغيير كنية عضو واحد',
-  groupOnly: true,
+  names: ['nick'], category: 'members', hint: '(رد/تاغ) + الكنية', desc: 'تغيير كنية عضو واحد', groupOnly: true,
   async run(ctx) {
     const { ids, rest } = await resolveTargets(ctx);
-    if (!ids.length || !rest) {
-      return void (await ctx.send('✏️ الاستخدام: رد على رسالة العضو (أو تاغ) ثم اكتب:\nnick الكنية'));
-    }
+    if (!ids.length || !rest) return void (await ctx.send('✏️ الاستخدام: رد على رسالة العضو (أو تاغ) ثم اكتب:\nnick الكنية'));
     const t = store.data.threads[ctx.threadID];
     for (const id of ids) {
       try {
         await ctx.call('changeNickname', rest, ctx.threadID, id);
-        // إن كانت حماية الكنيات مفعّلة نستثني هذا العضو كي لا تُعاد كنيته
-        if (t && t.nick) {
-          t.nick.overrides = t.nick.overrides || {};
-          t.nick.overrides[id] = rest;
-          store.save();
-        }
-      } catch (e) {
-        await ctx.send(`❌ تعذر تغيير كنية ${id}: ${errMsg(e)}`);
-      }
+        if (t && t.nick) { t.nick.overrides = t.nick.overrides || {}; t.nick.overrides[id] = rest; store.save(); }
+      } catch (e) { await ctx.send(`❌ تعذر تغيير كنية ${id}: ${errMsg(e)}`); }
       await sleep(600);
     }
   },
@@ -970,30 +809,17 @@ __def('commands/nicks', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
 const { sleep, beginTask, endTask } = require('../src/utils');
-
 module.exports = {
-  names: ['nicks'],
-  category: 'group',
-  hint: '+ الكنية  (أو off لإيقاف الحماية)',
-  desc: 'تغيير كنيات كل الأعضاء لكنية واحدة وحمايتها',
-  groupOnly: true,
+  names: ['nicks'], category: 'group', hint: '+ الكنية  (أو off لإيقاف الحماية)', desc: 'تغيير كنيات كل الأعضاء لكنية واحدة وحمايتها', groupOnly: true,
   async run({ send, call, args, threadID }) {
     if (!args) return void (await send('✏️ الاستخدام:\nnicks الكنية\nnicks off ← إيقاف الحماية'));
-
     const t = store.thread(threadID);
-    if (/^(off|stop|الغاء|إلغاء)$/i.test(args)) {
-      delete t.nick;
-      store.save();
-      return void (await send('🔓 تم إيقاف حماية الكنيات.'));
-    }
-
+    if (/^(off|stop|الغاء|إلغاء)$/i.test(args)) { delete t.nick; store.save(); return void (await send('🔓 تم إيقاف حماية الكنيات.')); }
     const info = await call('getThreadInfo', threadID);
     const ids = (info.participantIDs || []).map(String);
     const current = info.nicknames || {};
-
     t.nick = { all: args, overrides: {} };
     store.save();
-
     await send(`⏳ جاري تغيير كنيات ${ids.length} عضو إلى: ${args}`);
     const task = beginTask(threadID);
     let ok = 0;
@@ -1001,27 +827,13 @@ module.exports = {
     try {
       for (const id of ids) {
         if (task.cancelled) break;
-        if (current[id] === args) {
-          ok++;
-          continue;
-        }
-        try {
-          await call('changeNickname', args, threadID, id);
-          ok++;
-        } catch (_) {
-          fail++;
-        }
-        await sleep(900); // فاصل بسيط لتفادي حظر السرعة
+        if (current[id] === args) { ok++; continue; }
+        try { await call('changeNickname', args, threadID, id); ok++; }
+        catch (_) { fail++; }
+        await sleep(900);
       }
-    } finally {
-      endTask(threadID, task);
-    }
-
-    await send(
-      task.cancelled
-        ? `⏹ تم الإلغاء بعد تغيير ${ok} كنية.`
-        : `✅ تم تغيير ${ok} كنية${fail ? ` (فشل ${fail})` : ''} وتفعيل الحماية.`
-    );
+    } finally { endTask(threadID, task); }
+    await send(task.cancelled ? `⏹ تم الإلغاء بعد تغيير ${ok} كنية.` : `✅ تم تغيير ${ok} كنية${fail ? ` (فشل ${fail})` : ''} وتفعيل الحماية.`);
   },
 };
 });
@@ -1032,14 +844,8 @@ __def('commands/out', function (module, exports, require) {
 const store = require('../src/store');
 const state = require('../src/state');
 const spam = require('../src/spam');
-
 module.exports = {
-  names: ['out', 'leave', 'bye'],
-  category: 'group',
-  desc: 'مغادرة البوت للمجموعة',
-  noArgs: true,
-  groupOnly: true,
-  devOnly: true, // حتى لو فُتحت الأوامر للجميع
+  names: ['out', 'leave', 'bye'], category: 'group', desc: 'مغادرة البوت للمجموعة', noArgs: true, groupOnly: true, devOnly: true,
   async run({ send, call, threadID }) {
     await send('👋 وداعاً.. سأغادر المجموعة الآن.');
     await call('removeUserFromGroup', state.botID, threadID);
@@ -1055,45 +861,22 @@ __def('commands/pin', function (module, exports, require) {
 'use strict';
 const fs = require('fs');
 const { UA, tmpFile, download, rmSafe } = require('../src/utils');
-
 const HEADERS = { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' };
-
-// المحاولة 1: واجهة البحث الداخلية لبنترست
 async function viaApi(query) {
   const sourceUrl = `/search/pins/?q=${encodeURIComponent(query)}&rs=typed`;
   const data = JSON.stringify({ options: { query, scope: 'pins', page_size: 30, rs: 'typed' }, context: {} });
-  const url =
-    'https://www.pinterest.com/resource/BaseSearchResource/get/?source_url=' +
-    encodeURIComponent(sourceUrl) +
-    '&data=' + encodeURIComponent(data) +
-    '&_=' + Date.now();
-  const res = await fetch(url, {
-    headers: {
-      ...HEADERS,
-      Accept: 'application/json, text/javascript, */*; q=0.01',
-      'X-Requested-With': 'XMLHttpRequest',
-      'X-Pinterest-AppState': 'active',
-    },
-    signal: AbortSignal.timeout(15000),
-  });
+  const url = 'https://www.pinterest.com/resource/BaseSearchResource/get/?source_url=' + encodeURIComponent(sourceUrl) + '&data=' + encodeURIComponent(data) + '&_=' + Date.now();
+  const res = await fetch(url, { headers: { ...HEADERS, Accept: 'application/json, text/javascript, */*; q=0.01', 'X-Requested-With': 'XMLHttpRequest', 'X-Pinterest-AppState': 'active' }, signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const json = await res.json();
   const results = (json && json.resource_response && json.resource_response.data && json.resource_response.data.results) || [];
-  return results
-    .map((r) => r && r.images && ((r.images['736x'] && r.images['736x'].url) || (r.images.orig && r.images.orig.url)))
-    .filter(Boolean);
+  return results.map((r) => r && r.images && ((r.images['736x'] && r.images['736x'].url) || (r.images.orig && r.images.orig.url))).filter(Boolean);
 }
-
-// المحاولة 2: استخراج روابط الصور من صفحة البحث
 async function viaHtml(query) {
-  const res = await fetch('https://www.pinterest.com/search/pins/?q=' + encodeURIComponent(query), {
-    headers: { ...HEADERS, Accept: 'text/html' },
-    signal: AbortSignal.timeout(15000),
-  });
+  const res = await fetch('https://www.pinterest.com/search/pins/?q=' + encodeURIComponent(query), { headers: { ...HEADERS, Accept: 'text/html' }, signal: AbortSignal.timeout(15000) });
   const html = (await res.text()).replace(/\\u002F/g, '/').replace(/\\\//g, '/');
   return html.match(/https:\/\/i\.pinimg\.com\/(?:originals|736x|564x)\/[A-Za-z0-9_\/-]+\.(?:jpg|jpeg|png)/g) || [];
 }
-
 function unique(urls) {
   const byFile = new Map();
   for (const u of urls) {
@@ -1103,53 +886,33 @@ function unique(urls) {
   }
   return [...byFile.values()];
 }
-
 function pick(arr, n) {
   const pool = arr.slice(0, 12);
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
+  for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
   return pool.slice(0, n);
 }
-
 module.exports = {
-  names: ['pin'],
-  category: 'tools',
-  hint: '+ اسم الصورة',
-  desc: 'إرسال 4 صور من Pinterest في رسالة واحدة',
+  names: ['pin'], category: 'tools', hint: '+ اسم الصورة', desc: 'إرسال 4 صور من Pinterest في رسالة واحدة',
   async run({ args, send }) {
     if (!args) return void (await send('✏️ الاستخدام: pin اسم الصورة'));
-
     let urls = [];
-    try {
-      urls = unique(await viaApi(args));
-    } catch (_) {}
-    if (urls.length < 4) {
-      try {
-        urls = unique([...urls, ...(await viaHtml(args))]);
-      } catch (_) {}
-    }
+    try { urls = unique(await viaApi(args)); } catch (_) {}
+    if (urls.length < 4) { try { urls = unique([...urls, ...(await viaHtml(args))]); } catch (_) {} }
     if (!urls.length) return void (await send('❌ لم أجد صوراً لهذا البحث (أو أن Pinterest حجب الطلب).'));
-
     const chosen = pick(urls, 4);
     const files = [];
     try {
-      const results = await Promise.allSettled(
-        chosen.map(async (u, i) => {
-          const f = tmpFile('jpg');
-          const info = await download(u, f, { timeout: 20000 });
-          if (info.size < 1024 || !/^image\//i.test(info.type)) throw new Error('ليست صورة');
-          files[i] = f;
-        })
-      );
+      const results = await Promise.allSettled(chosen.map(async (u, i) => {
+        const f = tmpFile('jpg');
+        const info = await download(u, f, { timeout: 20000 });
+        if (info.size < 1024 || !/^image\//i.test(info.type)) throw new Error('ليست صورة');
+        files[i] = f;
+      }));
       void results;
       const ok = files.filter(Boolean);
       if (!ok.length) return void (await send('❌ تعذر تحميل الصور.'));
       await send({ body: `📌 ${args}`, attachment: ok.map((f) => fs.createReadStream(f)) });
-    } finally {
-      await rmSafe(files.filter(Boolean));
-    }
+    } finally { await rmSafe(files.filter(Boolean)); }
   },
 };
 });
@@ -1157,20 +920,14 @@ module.exports = {
 // ══════════════ commands/ping ══════════════
 __def('commands/ping', function (module, exports, require) {
 'use strict';
-
 module.exports = {
-  names: ['ping'],
-  category: 'general',
-  order: 1,
-  desc: 'عرض سرعة الاستجابة (البينغ)',
-  noArgs: true,
+  names: ['ping'], category: 'general', order: 1, desc: 'عرض سرعة الاستجابة (البينغ)', noArgs: true,
   async run({ event, send }) {
     const ts = Number(event.timestamp);
     const t0 = Date.now();
     const delay = Number.isFinite(ts) && ts > 0 ? Math.max(0, t0 - ts) : null;
     if (delay !== null) return void (await send(`🏓 Pong!\n⚡ ${delay}ms`));
     await send('🏓 Pong!');
-    // لا يوجد توقيت للرسالة: نعرض زمن الإرسال بدلاً منه
     await send(`⚡ ${Date.now() - t0}ms`);
   },
 };
@@ -1181,12 +938,8 @@ __def('commands/rest', function (module, exports, require) {
 'use strict';
 const spam = require('../src/spam');
 const { cancelAllTasks } = require('../src/utils');
-
 module.exports = {
-  names: ['rest'],
-  category: 'tools',
-  desc: 'إلغاء كل الأوامر الجارية (سبام وغيره) والراحة',
-  noArgs: true,
+  names: ['rest'], category: 'tools', desc: 'إلغاء كل الأوامر الجارية (سبام وغيره) والراحة', noArgs: true,
   async run({ send }) {
     const spams = spam.stopAll();
     const tasks = cancelAllTasks();
@@ -1200,23 +953,15 @@ __def('commands/spam', function (module, exports, require) {
 'use strict';
 const { MIN_SPAM_SECONDS } = require('../src/config');
 const spam = require('../src/spam');
-
 module.exports = {
-  names: ['spam'],
-  category: 'tools',
-  hint: '+ رسالة + المدة بالثواني',
-  desc: 'إرسال الرسالة تلقائياً كل المدة حتى stop / spamoff / rest',
+  names: ['spam'], category: 'tools', hint: '+ رسالة + المدة بالثواني', desc: 'إرسال الرسالة تلقائياً كل المدة حتى stop / spamoff / rest',
   async run({ api, args, threadID, send }) {
     const m = args.match(/^([\s\S]+?)\s+(\d+(?:\.\d+)?)$/);
     if (!m) return void (await send('✏️ الاستخدام:\nspam الرسالة 5\n(الرقم الأخير = المدة بالثواني)'));
-
     const message = m[1].trim();
     let seconds = Number(m[2]);
     let note = '';
-    if (seconds < MIN_SPAM_SECONDS) {
-      seconds = MIN_SPAM_SECONDS;
-      note = `\nℹ️ أقل مدة مسموحة ${MIN_SPAM_SECONDS} ثانية.`;
-    }
+    if (seconds < MIN_SPAM_SECONDS) { seconds = MIN_SPAM_SECONDS; note = `\nℹ️ أقل مدة مسموحة ${MIN_SPAM_SECONDS} ثانية.`; }
     spam.start(api, threadID, message, seconds);
     await send(`🔁 بدأ السبام كل ${seconds} ثانية.\nللإيقاف: stop أو spamoff أو rest${note}`);
   },
@@ -1227,15 +972,9 @@ module.exports = {
 __def('commands/stop', function (module, exports, require) {
 'use strict';
 const spam = require('../src/spam');
-
 module.exports = {
-  names: ['stop', 'spamoff'],
-  category: 'tools',
-  desc: 'إيقاف السبام في هذه المحادثة',
-  noArgs: true,
-  async run({ threadID, send }) {
-    await send(spam.stop(threadID) ? '⏹ تم إيقاف السبام.' : 'ℹ️ لا يوجد سبام نشط هنا.');
-  },
+  names: ['stop', 'spamoff'], category: 'tools', desc: 'إيقاف السبام في هذه المحادثة', noArgs: true,
+  async run({ threadID, send }) { await send(spam.stop(threadID) ? '⏹ تم إيقاف السبام.' : 'ℹ️ لا يوجد سبام نشط هنا.'); },
 };
 });
 
@@ -1243,23 +982,13 @@ module.exports = {
 __def('commands/uid', function (module, exports, require) {
 'use strict';
 const { resolveTargets } = require('../src/utils');
-
 module.exports = {
-  names: ['uid', 'id'],
-  category: 'members',
-  hint: '(رد / تاغ / رابط حساب)',
-  desc: 'عرض ايدي الحساب (أرقام فقط)',
+  names: ['uid', 'id'], category: 'members', hint: '(رد / تاغ / رابط حساب)', desc: 'عرض ايدي الحساب (أرقام فقط)',
   async run(ctx) {
     const { ids, failed } = await resolveTargets(ctx);
-    if (ids.length) {
-      await ctx.send(ids.join('\n'));
-      if (failed.length) await ctx.send(`⚠️ تعذر استخراج: ${failed.join(' , ')}`);
-      return;
-    }
-    if (failed.length) {
-      return void (await ctx.send(`⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}\nجرّب رابط profile.php?id=… أو الرد على رسالته.`));
-    }
-    await ctx.send(ctx.senderID); // بدون هدف: ايدي المرسل نفسه
+    if (ids.length) { await ctx.send(ids.join('\n')); if (failed.length) await ctx.send(`⚠️ تعذر استخراج: ${failed.join(' , ')}`); return; }
+    if (failed.length) return void (await ctx.send(`⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}\nجرّب رابط profile.php?id=… أو الرد على رسالته.`));
+    await ctx.send(ctx.senderID);
   },
 };
 });
@@ -1269,29 +998,16 @@ __def('commands/undev', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
 const { resolveTargets, isAdmin } = require('../src/utils');
-
 module.exports = {
-  names: ['undev'],
-  category: 'admin',
-  hint: '(رد / تاغ / رابط / ايدي)',
-  desc: 'نزع صلاحية مطور',
-  adminOnly: true,
+  names: ['undev'], category: 'admin', hint: '(رد / تاغ / رابط / ايدي)', desc: 'نزع صلاحية مطور', adminOnly: true,
   async run(ctx) {
     const { ids, failed } = await resolveTargets(ctx);
-    if (!ids.length) {
-      return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: رد على رسالة العضو أو تاغ ثم اكتب undev'));
-    }
+    if (!ids.length) return void (await ctx.send(failed.length ? `⚠️ تعذر استخراج الايدي من: ${failed.join(' , ')}` : '✏️ الاستخدام: رد على رسالة العضو أو تاغ ثم اكتب undev'));
     const removed = [];
     for (const id of ids) {
-      if (isAdmin(id)) {
-        await ctx.send('🚫 لا يمكن نزع صلاحية المطور الأساسي.');
-        continue;
-      }
+      if (isAdmin(id)) { await ctx.send('🚫 لا يمكن نزع صلاحية المطور الأساسي.'); continue; }
       const i = store.data.devs.indexOf(id);
-      if (i !== -1) {
-        store.data.devs.splice(i, 1);
-        removed.push(id);
-      }
+      if (i !== -1) { store.data.devs.splice(i, 1); removed.push(id); }
     }
     store.save();
     if (removed.length) await ctx.send(`✅ تم نزع الصلاحية من: ${removed.join(' , ')}`);
@@ -1304,13 +1020,8 @@ module.exports = {
 __def('commands/unlock', function (module, exports, require) {
 'use strict';
 const store = require('../src/store');
-
 module.exports = {
-  names: ['unlock'],
-  category: 'admin',
-  desc: 'فتح الأوامر لتعمل لجميع الأعضاء',
-  noArgs: true,
-  devOnly: true,
+  names: ['unlock'], category: 'admin', desc: 'فتح الأوامر لتعمل لجميع الأعضاء', noArgs: true, devOnly: true,
   async run({ send }) {
     store.data.locked = false;
     store.save();
@@ -1328,56 +1039,34 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { TMP_DIR, YT_MAX_MINUTES, YT_COOKIES, YTDLP_EXTRA_ARGS } = require('../src/config');
 const { call, rmSafe, errMsg } = require('../src/utils');
-
-const MAX_BYTES = 25 * 1024 * 1024; // حد مرفقات ماسنجر
+const MAX_BYTES = 25 * 1024 * 1024;
 let busy = false;
 let cookiesFile = null;
 let ytdlpPromise = null;
 
 function getCookiesFile() {
   if (!YT_COOKIES) return null;
-  if (!cookiesFile) {
-    cookiesFile = path.join(TMP_DIR, 'yt-cookies.txt');
-    fs.writeFileSync(cookiesFile, YT_COOKIES);
-  }
+  if (!cookiesFile) { cookiesFile = path.join(TMP_DIR, 'yt-cookies.txt'); fs.writeFileSync(cookiesFile, YT_COOKIES); }
   return cookiesFile;
 }
-
-// ffmpeg اختياري (حزمة ffmpeg-static): إن وُجد نحوّل إلى mp3، وإلا نرسل m4a مباشرة
 function getFfmpeg() {
-  try {
-    const p = require('ffmpeg-static');
-    return p && fs.existsSync(p) ? p : null;
-  } catch (_) {
-    return null;
-  }
+  try { const p = require('ffmpeg-static'); return p && fs.existsSync(p) ? p : null; }
+  catch (_) { return null; }
 }
-
 function runBin(bin, args, timeoutMs) {
   return new Promise((resolve) => {
     let p;
-    try {
-      p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (e) {
-      return resolve({ code: -1, out: '', err: String(e.message) });
-    }
+    try { p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (e) { return resolve({ code: -1, out: '', err: String(e.message) }); }
     let out = '';
     let err = '';
     const timer = setTimeout(() => p.kill('SIGKILL'), timeoutMs);
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => (err += d));
-    p.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: -1, out, err: String(e.message) });
-    });
-    p.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code, out, err });
-    });
+    p.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, out, err: String(e.message) }); });
+    p.on('close', (code) => { clearTimeout(timer); resolve({ code, out, err }); });
   });
 }
-
-// يجهّز yt-dlp: المثبّت في النظام، أو يحمّل النسخة المستقلة مرة واحدة إلى /tmp
 function ensureYtDlp() {
   if (!ytdlpPromise) {
     ytdlpPromise = (async () => {
@@ -1388,10 +1077,7 @@ function ensureYtDlp() {
       const asset = process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux';
       const file = path.join(TMP_DIR, asset);
       if (!fs.existsSync(file)) {
-        const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`, {
-          redirect: 'follow',
-          signal: AbortSignal.timeout(180000),
-        });
+        const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}`, { redirect: 'follow', signal: AbortSignal.timeout(180000) });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const part = file + '.part';
         fs.writeFileSync(part, Buffer.from(await res.arrayBuffer()), { mode: 0o755 });
@@ -1399,57 +1085,33 @@ function ensureYtDlp() {
       }
       fs.chmodSync(file, 0o755);
       return file;
-    })().catch((e) => {
-      ytdlpPromise = null; // يعيد المحاولة في الطلب القادم
-      throw e;
-    });
+    })().catch((e) => { ytdlpPromise = null; throw e; });
   }
   return ytdlpPromise;
 }
-
 module.exports = {
-  names: ['yt', 'song', 'yout', 'يوت'],
-  category: 'tools',
-  hint: '+ اسم الأغنية',
-  desc: 'إرسال الأغنية المطلوبة (mp3)',
+  names: ['yt', 'song', 'yout', 'يوت'], category: 'tools', hint: '+ اسم الأغنية', desc: 'إرسال الأغنية المطلوبة (mp3)',
   async run({ api, args, threadID, send }) {
     if (!args) return void (await send('✏️ الاستخدام: yt اسم الأغنية'));
     if (busy) return void (await send('⏳ هناك تحميل جارٍ، انتظر قليلاً.'));
     busy = true;
-
     const id = crypto.randomBytes(5).toString('hex');
     const prefix = `yt-${id}`;
     const searching = await send(`🔎 جاري البحث والتحميل: ${args}\n(أول مرة قد تستغرق أطول)`, { track: false });
     try {
       let bin;
-      try {
-        bin = await ensureYtDlp();
-      } catch (e) {
-        return void (await send(`❌ تعذر تجهيز أداة التحميل yt-dlp: ${errMsg(e)}`));
-      }
-
+      try { bin = await ensureYtDlp(); }
+      catch (e) { return void (await send(`❌ تعذر تجهيز أداة التحميل yt-dlp: ${errMsg(e)}`)); }
       const cookies = getCookiesFile();
       const ffmpeg = getFfmpeg();
-      const audioArgs = ffmpeg
-        ? ['-x', '--audio-format', 'mp3', '--audio-quality', '5', '--ffmpeg-location', ffmpeg]
-        : ['-f', 'bestaudio[ext=m4a]/bestaudio'];
-
-      const r = await runBin(
-        bin,
-        [
-          `ytsearch5:${args}`,
-          ...audioArgs,
-          '--no-playlist', '--no-warnings',
-          '--match-filter', `duration<=${YT_MAX_MINUTES * 60} & !is_live`,
-          '--max-downloads', '1', // أول نتيجة مناسبة فقط
-          '--print', '%(title)s', '--no-simulate',
-          '-o', path.join(TMP_DIR, `${prefix}.%(ext)s`),
-          ...(cookies ? ['--cookies', cookies] : []),
-          ...YTDLP_EXTRA_ARGS,
-        ],
-        4 * 60 * 1000
-      );
-
+      const audioArgs = ffmpeg ? ['-x', '--audio-format', 'mp3', '--audio-quality', '5', '--ffmpeg-location', ffmpeg] : ['-f', 'bestaudio[ext=m4a]/bestaudio'];
+      const r = await runBin(bin, [
+        `ytsearch5:${args}`, ...audioArgs, '--no-playlist', '--no-warnings',
+        '--match-filter', `duration<=${YT_MAX_MINUTES * 60} & !is_live`,
+        '--max-downloads', '1', '--print', '%(title)s', '--no-simulate',
+        '-o', path.join(TMP_DIR, `${prefix}.%(ext)s`),
+        ...(cookies ? ['--cookies', cookies] : []), ...YTDLP_EXTRA_ARGS,
+      ], 4 * 60 * 1000);
       const files = fs.readdirSync(TMP_DIR).filter((f) => f.startsWith(prefix + '.') && !/\.(part|ytdl)$/.test(f));
       const pick = files.find((f) => f.endsWith('.mp3')) || files.find((f) => f.endsWith('.m4a')) || files[0];
       if (!pick) {
@@ -1457,9 +1119,7 @@ module.exports = {
         return void (await send(`❌ لم أجد نتيجة مناسبة (أقل من ${YT_MAX_MINUTES} دقيقة).${tail ? '\n' + tail.slice(0, 150) : ''}`));
       }
       const file = path.join(TMP_DIR, pick);
-      if (fs.statSync(file).size > MAX_BYTES) {
-        return void (await send('❌ الملف أكبر من 25MB — جرّب أغنية أقصر.'));
-      }
+      if (fs.statSync(file).size > MAX_BYTES) return void (await send('❌ الملف أكبر من 25MB — جرّب أغنية أقصر.'));
       const title = r.out.split('\n').map((s) => s.trim()).filter(Boolean)[0] || args;
       await send({ body: `🎵 ${title}`, attachment: fs.createReadStream(file) });
     } finally {
@@ -1489,7 +1149,6 @@ const { resolveUid, errMsg } = require('./src/utils');
 
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
-process.on('SIGTERM', () => process.exit(0));
 
 /* ───────── الكوكيز ───────── */
 function loadAppState() {
@@ -1506,62 +1165,172 @@ function loadAppState() {
 
 /* ───────── خادم صحي بسيط (لـ Railway) ───────── */
 function startHttp() {
-  http
-    .createServer((_, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('OLIVE BOT OK');
-    })
-    .listen(config.PORT, () => console.log(`[http] listening on ${config.PORT}`));
+  http.createServer((_, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('OLIVE BOT OK');
+  }).listen(config.PORT, () => console.log(`[http] listening on ${config.PORT}`));
 }
 
-/* ───────── الاستماع للأحداث ───────── */
+/* ───────── الاستماع للأحداث: مراقب اتصال MQTT ───────── */
 let handle = null;
 let retry = 0;
 let relistenTimer = null;
+let listenerGeneration = 0;
+let shuttingDown = false;
+let authBlocked = false;
+
+const MAX_RETRY_DELAY = 5 * 60 * 1000;
 
 function stopListener(h) {
+  if (!h) return;
   try {
-    if (typeof h === 'function') h();
-    else if (h && typeof h.stopListening === 'function') h.stopListening();
-  } catch (_) {}
+    if (typeof h === 'function') {
+      h();
+    } else if (typeof h.stopListening === 'function') {
+      h.stopListening();
+    } else if (typeof h.stopListeningAsync === 'function') {
+      Promise.resolve(h.stopListeningAsync()).catch((e) => {
+        console.warn('[listen] stopListeningAsync:', errMsg(e));
+      });
+    }
+  } catch (e) {
+    console.warn('[listen] تعذر إيقاف المستمع القديم:', errMsg(e));
+  }
 }
 
-async function dispatch(api, event) {
-  if (!event) return;
-  if (event.type === 'message' || event.type === 'message_reply') return onMessage(api, event);
-  if (event.type === 'event') return onLogEvent(api, event);
-}
-
-function onListenError(api, err) {
+function describeListenError(err) {
   let text = errMsg(err);
   try {
-    text += ' ' + JSON.stringify(err);
+    const raw = JSON.stringify(err);
+    if (raw && !text.includes(raw)) text += ' ' + raw;
   } catch (_) {}
-  console.error('[listen] error:', text.slice(0, 300));
+  return text.slice(0, 1000);
+}
 
-  if (/not_logged_in|not logged in|account_inactive|checkpoint|login_approvals/i.test(text)) {
-    console.error('[bot] الكوكيز منتهية أو الحساب عليه تحقق — حدّث APPSTATE ثم أعد النشر.');
-    process.exit(2);
+function isSecurityCheckpoint(text) {
+  return /account_inactive|checkpoint|login[_ -]?approvals?|review[_ -]?recent[_ -]?login|two.factor|invalid credentials|session expired/i.test(text);
+}
+
+function scheduleRelisten(api, reason) {
+  if (shuttingDown || authBlocked || relistenTimer) return;
+
+  retry += 1;
+  const delay = Math.min(MAX_RETRY_DELAY, 5000 * (2 ** Math.min(retry - 1, 6)));
+  const seconds = Math.round(delay / 1000);
+
+  console.warn(`[listen] إعادة محاولة MQTT رقم ${retry} بعد ${seconds} ثانية. السبب: ${reason}`);
+  if (retry >= 7) {
+    console.error('[listen] ما زال الاتصال يفشل؛ ستستمر المحاولة بفاصل 5 دقائق. إذا استمر خطأ Not logged in، افحص جلسة فيسبوك يدوياً.');
   }
-  if (relistenTimer) return;
-  const delay = Math.min(60000, 3000 * 2 ** retry++);
+
   relistenTimer = setTimeout(() => {
     relistenTimer = null;
     listen(api);
   }, delay);
+  relistenTimer.unref?.();
+}
+
+function onListenError(api, err, generation) {
+  if (generation !== listenerGeneration || shuttingDown) return;
+
+  const text = describeListenError(err);
+  console.error('[listen] MQTT/getSeqId error:', text);
+
+  listenerGeneration += 1;
+  const oldHandle = handle;
+  handle = null;
+  stopListener(oldHandle);
+
+  if (isSecurityCheckpoint(text)) {
+    authBlocked = true;
+    if (relistenTimer) {
+      clearTimeout(relistenTimer);
+      relistenTimer = null;
+    }
+    console.error('[bot] أوقفنا إعادة الاتصال لأن فيسبوك أرسل إشارة تحقق/مراجعة أمان. افتح الحساب يدوياً في فيسبوك، أكمل التحقق، ثم حدّث APPSTATE في Railway عند الحاجة. لن يحاول البوت تجاوز التحقق.');
+    return;
+  }
+
+  if (/1357004|not logged in|getseqid|sync_sequence_id/i.test(text)) {
+    console.warn('[listen] فشل مزامنة Messenger. سنعيد المحاولة بتدرّج، دون إنهاء عملية Railway.');
+  }
+
+  scheduleRelisten(api, text);
 }
 
 function listen(api) {
-  stopListener(handle);
-  handle = api.listenMqtt((err, event) => {
-    if (err) return onListenError(api, err);
-    retry = 0;
-    state.lastEventAt = Date.now();
-    dispatch(api, event).catch((e) => console.error('[event]', e));
-  });
+  if (shuttingDown || authBlocked) return;
+
+  if (relistenTimer) {
+    clearTimeout(relistenTimer);
+    relistenTimer = null;
+  }
+
+  const generation = ++listenerGeneration;
+  const previous = handle;
+  handle = null;
+  stopListener(previous);
+
+  const activeGeneration = generation;
+  console.log('[listen] تشغيل مستمع Messenger MQTT...');
+
+  try {
+    const newHandle = api.listenMqtt((err, event) => {
+      if (activeGeneration !== listenerGeneration || shuttingDown) return;
+
+      if (err) {
+        onListenError(api, err, activeGeneration);
+        return;
+      }
+      if (!event) return;
+
+      state.lastEventAt = Date.now();
+
+      if (event.type === 'ready') {
+        retry = 0;
+        console.log('[listen] اتصال MQTT جاهز والمزامنة اكتملت.');
+        return;
+      }
+
+      dispatch(api, event).catch((e) => {
+        console.error('[event]', e);
+      });
+    });
+
+    if (activeGeneration === listenerGeneration) {
+      handle = newHandle;
+    } else {
+      stopListener(newHandle);
+    }
+  } catch (e) {
+    onListenError(api, e, activeGeneration);
+  }
+}
+
+function dispatch(api, event) {
+  if (!event) return Promise.resolve();
+  if (event.type === 'message' || event.type === 'message_reply') {
+    return onMessage(api, event);
+  }
+  if (event.type === 'event') {
+    return onLogEvent(api, event);
+  }
+  return Promise.resolve();
 }
 
 /* ───────── التشغيل ───────── */
+function stopProcess(signal) {
+  shuttingDown = true;
+  if (relistenTimer) clearTimeout(relistenTimer);
+  relistenTimer = null;
+  stopListener(handle);
+  handle = null;
+  console.log(`[bot] إيقاف آمن بسبب ${signal}`);
+  process.exit(0);
+}
+process.once('SIGTERM', () => stopProcess('SIGTERM'));
+process.once('SIGINT', () => stopProcess('SIGINT'));
+
 async function onReady(api) {
   state.api = api;
   state.botID = String(api.getCurrentUserID());
@@ -1594,7 +1363,14 @@ function main() {
   const login = require('fca-unofficial');
   login(
     { appState },
-    { listenEvents: true, selfListen: false, autoMarkDelivery: false, logLevel: 'error' },
+    {
+      listenEvents: true,
+      selfListen: false,
+      autoMarkDelivery: false,
+      autoReconnect: true,
+      emitReady: true,
+      logLevel: 'error',
+    },
     (err, api) => {
       if (err) {
         console.error('[login] فشل تسجيل الدخول:', errMsg(err));
